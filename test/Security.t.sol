@@ -69,8 +69,8 @@ contract SecurityTest is Test {
             toLevel: 2,
             tokenIdBurn: 0,
             tokenIdMint: 1,
-            burnAmount: 5,
-            clashCost: 1 ether,  // WRONG! Should be 10_000 ether
+            burnAmount: 10,
+            clashCost: 1 ether,  // WRONG! Should be 10_000_000 ether
             nonce: 1,
             deadline: block.timestamp + 1000
         });
@@ -85,7 +85,7 @@ contract SecurityTest is Test {
 
     function testUpgradeCorrectCostWorks() public {
         // Sign upgrade with CORRECT cost
-        uint256 correctCost = 10_000 ether;
+        uint256 correctCost = 10_000_000 ether;
         ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
             user: user1,
             cardType: ClashCardManager.CardType.Knight,
@@ -93,7 +93,7 @@ contract SecurityTest is Test {
             toLevel: 2,
             tokenIdBurn: 0,
             tokenIdMint: 1,
-            burnAmount: 5,
+            burnAmount: 10,
             clashCost: correctCost,
             nonce: 2,
             deadline: block.timestamp + 1000
@@ -102,9 +102,8 @@ contract SecurityTest is Test {
         bytes32 opId = keccak256(abi.encode(req));
         bytes memory sig = signOperation(gameServer, opId);
 
-        // First mint some Knight L1 to user1 via manager (test bypass attempt)
-        // Actually, mint to user1 directly (admin is minter)
-        cards.mint(user1, 0, 5, "");
+        // Mint 10 Knight L1 to user1
+        cards.mint(user1, 0, 10, "");
         vm.prank(user1);
         cards.setApprovalForAll(address(manager), true);
 
@@ -117,7 +116,7 @@ contract SecurityTest is Test {
         // Verify $CLASH paid
         assertEq(token.balanceOf(treasury) - balBefore, correctCost);
         // Verify NFT burned
-        assertEq(cards.balanceOf(user1, 0), user1NftBefore - 5);
+        assertEq(cards.balanceOf(user1, 0), user1NftBefore - 10);
         // Verify NFT minted
         assertEq(cards.balanceOf(user1, 1), 1);
     }
@@ -126,7 +125,7 @@ contract SecurityTest is Test {
 
     function testReplayReverts() public {
         // First, get the operation to succeed
-        uint256 correctCost = 10_000 ether;
+        uint256 correctCost = 10_000_000 ether;
         ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
             user: user1,
             cardType: ClashCardManager.CardType.Knight,
@@ -134,7 +133,7 @@ contract SecurityTest is Test {
             toLevel: 2,
             tokenIdBurn: 0,
             tokenIdMint: 1,
-            burnAmount: 5,
+            burnAmount: 10,
             clashCost: correctCost,
             nonce: 3,
             deadline: block.timestamp + 1000
@@ -143,7 +142,7 @@ contract SecurityTest is Test {
         bytes32 opId = keccak256(abi.encode(req));
         bytes memory sig = signOperation(gameServer, opId);
 
-        cards.mint(user1, 0, 5, "");
+        cards.mint(user1, 0, 10, "");
         vm.prank(user1);
         cards.setApprovalForAll(address(manager), true);
 
@@ -167,8 +166,8 @@ contract SecurityTest is Test {
             toLevel: 2,
             tokenIdBurn: 0,
             tokenIdMint: 1,
-            burnAmount: 5,
-            clashCost: 10_000 ether,
+            burnAmount: 10,
+            clashCost: 10_000_000 ether,
             nonce: 4,
             deadline: block.timestamp - 1  // EXPIRED
         });
@@ -191,8 +190,8 @@ contract SecurityTest is Test {
             toLevel: 2,
             tokenIdBurn: 0,
             tokenIdMint: 1,
-            burnAmount: 5,
-            clashCost: 10_000 ether,
+            burnAmount: 10,
+            clashCost: 10_000_000 ether,
             nonce: 5,
             deadline: block.timestamp + 1000
         });
@@ -216,8 +215,8 @@ contract SecurityTest is Test {
             toLevel: 2,
             tokenIdBurn: 0,
             tokenIdMint: 1,
-            burnAmount: 5,
-            clashCost: 10_000 ether,
+            burnAmount: 10,
+            clashCost: 10_000_000 ether,
             nonce: 6,
             deadline: block.timestamp + 1000
         });
@@ -256,6 +255,42 @@ contract SecurityTest is Test {
         vm.expectRevert();
         vm.prank(attacker);
         cards.mintBatch(attacker, tokenIds, amounts, "");
+    }
+
+    function testBurnCountMismatchReverts() public {
+        // Try to upgrade with WRONG burn count (5 instead of 10 for L1->L2)
+        ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
+            user: user1,
+            cardType: ClashCardManager.CardType.Knight,
+            fromLevel: 1,
+            toLevel: 2,
+            tokenIdBurn: 0,
+            tokenIdMint: 1,
+            burnAmount: 5,  // WRONG! Should be 10
+            clashCost: 10_000_000 ether,
+            nonce: 100,
+            deadline: block.timestamp + 1000
+        });
+
+        bytes32 opId = keccak256(abi.encode(req));
+        bytes memory sig = signOperation(gameServer, opId);
+
+        vm.expectRevert("Burn count mismatch");
+        vm.prank(user1);
+        manager.upgradeCard(req, sig);
+    }
+
+    function testGetUpgradeBurnCount() public view {
+        // Verify burn count getter returns correct values
+        assertEq(manager.getUpgradeBurnCount(1), 10);
+        assertEq(manager.getUpgradeBurnCount(2), 40);
+        assertEq(manager.getUpgradeBurnCount(3), 80);
+        assertEq(manager.getUpgradeBurnCount(9), 5120);
+    }
+
+    function testSetUpgradeBurnCount() public {
+        manager.setUpgradeBurnCount(1, 20);
+        assertEq(manager.getUpgradeBurnCount(1), 20);
     }
 
     // ========== Buy pack tests ==========

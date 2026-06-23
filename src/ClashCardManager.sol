@@ -66,17 +66,30 @@ contract ClashCardManager is AccessControl, ReentrancyGuard {
     mapping(bytes32 => bool) public usedOperations;
 
     // Pricing config (in $CLASH with 18 decimals)
-    // Upgrade cost: 10k, 20k, 40k, 80k, 160k, 320k, 640k, 1.28M, 2.56M
+    // Upgrade cost: 10M, 20M, 40M, 80M, 160M, 320M, 640M, 1.28B, 2.56B
     uint256[9] public upgradeCosts = [
-        10_000 ether,      // L1 -> L2
-        20_000 ether,      // L2 -> L3
-        40_000 ether,      // L3 -> L4
-        80_000 ether,      // L4 -> L5
-        160_000 ether,     // L5 -> L6
-        320_000 ether,     // L6 -> L7
-        640_000 ether,     // L7 -> L8
-        1_280_000 ether,   // L8 -> L9
-        2_560_000 ether    // L9 -> L10
+        10_000_000 ether,    // L1 -> L2
+        20_000_000 ether,    // L2 -> L3
+        40_000_000 ether,    // L3 -> L4
+        80_000_000 ether,    // L4 -> L5
+        160_000_000 ether,   // L5 -> L6
+        320_000_000 ether,   // L6 -> L7
+        640_000_000 ether,   // L7 -> L8
+        1_280_000_000 ether, // L8 -> L9
+        2_560_000_000 ether  // L9 -> L10
+    ];
+
+    // NFT count required per upgrade (10, 40, 80, 160, 320, 640, 1280, 2560, 5120)
+    uint256[9] public upgradeBurnCounts = [
+        10,    // L1 -> L2
+        40,    // L2 -> L3
+        80,    // L3 -> L4
+        160,   // L4 -> L5
+        320,   // L5 -> L6
+        640,   // L6 -> L7
+        1280,  // L7 -> L8
+        2560,  // L8 -> L9
+        5120   // L9 -> L10
     ];
 
     // Pack costs
@@ -85,6 +98,7 @@ contract ClashCardManager is AccessControl, ReentrancyGuard {
     mapping(ChestType => uint256) public chestCosts;
 
     event UpgradeCostUpdated(uint8 level, uint256 newCost);
+    event UpgradeBurnCountUpdated(uint8 level, uint256 newCount);
     event PackCostUpdated(bytes32 packId, uint256 newCost);
     event ChestCostUpdated(ChestType chestType, uint256 newCost);
 
@@ -153,6 +167,18 @@ contract ClashCardManager is AccessControl, ReentrancyGuard {
     }
 
     /**
+     * @notice Update burn count for a specific upgrade level (admin only)
+     * @param level Level transitioning FROM (1-9)
+     * @param newCount New NFT count required to burn
+     */
+    function setUpgradeBurnCount(uint8 level, uint256 newCount) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(level >= 1 && level <= 9, "Invalid level");
+        require(newCount > 0, "Invalid count");
+        upgradeBurnCounts[level - 1] = newCount;
+        emit UpgradeBurnCountUpdated(level, newCount);
+    }
+
+    /**
      * @notice Update pack cost (admin only)
      * @param packId Pack ID
      * @param newCost New cost in $CLASH
@@ -182,6 +208,16 @@ contract ClashCardManager is AccessControl, ReentrancyGuard {
     function getUpgradeCost(uint8 fromLevel) external view returns (uint256) {
         require(fromLevel >= 1 && fromLevel <= 9, "Invalid level");
         return upgradeCosts[fromLevel - 1];
+    }
+
+    /**
+     * @notice Get burn count for a level transition
+     * @param fromLevel Level transitioning FROM (1-9)
+     * @return Number of NFTs required to burn
+     */
+    function getUpgradeBurnCount(uint8 fromLevel) external view returns (uint256) {
+        require(fromLevel >= 1 && fromLevel <= 9, "Invalid level");
+        return upgradeBurnCounts[fromLevel - 1];
     }
 
     /**
@@ -218,13 +254,16 @@ contract ClashCardManager is AccessControl, ReentrancyGuard {
         require(block.timestamp <= request.deadline, "Expired");
         require(request.user == msg.sender, "Wrong user");
         require(request.toLevel == request.fromLevel + 1, "Invalid level diff");
-        require(request.burnAmount > 0, "Invalid burn amount");
         require(request.clashCost > 0, "Invalid cost");
         require(request.tokenIdMint == tokenIdOf(request.cardType, request.toLevel), "Invalid mint tokenId");
 
         // CRITICAL: validate cost matches on-chain pricing (anti-forgery)
         uint256 expectedCost = upgradeCosts[request.fromLevel - 1];
         require(request.clashCost == expectedCost, "Cost mismatch");
+
+        // CRITICAL: validate burn count matches on-chain (anti-forgery)
+        uint256 expectedBurn = upgradeBurnCounts[request.fromLevel - 1];
+        require(request.burnAmount == expectedBurn, "Burn count mismatch");
 
         // Replay protection
         bytes32 opId = keccak256(abi.encode(request));
