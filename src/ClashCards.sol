@@ -122,7 +122,7 @@ contract ClashCards is ERC1155, ERC1155Supply, AccessControl, ERC2981 {
      * @param tokenId Token ID
      * @return Total supply
      */
-    function totalSupply(uint256 tokenId) public view returns (uint256) {
+    function totalSupply(uint256 tokenId) public view override returns (uint256) {
         return super.totalSupply(tokenId);
     }
 
