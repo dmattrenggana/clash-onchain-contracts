@@ -44,25 +44,25 @@ contract ClashCardsTest is Test {
 
     function testTokenIdOf() public view {
         // Knight L1 = 0
-        assertEq(manager.tokenIdOf(ClashCardManager.CardType.Knight, 1), 0);
+        assertEq(manager.tokenIdOf(0, 1), 0);
         // Knight L10 = 9
-        assertEq(manager.tokenIdOf(ClashCardManager.CardType.Knight, 10), 9);
-        // Wyvern L1 = 30
-        assertEq(manager.tokenIdOf(ClashCardManager.CardType.Wyvern, 1), 30);
-        // Incubus L10 = 119
-        assertEq(manager.tokenIdOf(ClashCardManager.CardType.Incubus, 10), 119);
+        assertEq(manager.tokenIdOf(0, 10), 9);
+        // Wyvern L1 = 3*256 = 768
+        assertEq(manager.tokenIdOf(3, 1), 768);
+        // Incubus L10 = 11*256 + 9 = 2825
+        assertEq(manager.tokenIdOf(11, 10), 2825);
     }
 
     function testCardTypeOf() public view {
-        assertEq(uint(manager.cardTypeOf(0)), uint(ClashCardManager.CardType.Knight));
-        assertEq(uint(manager.cardTypeOf(30)), uint(ClashCardManager.CardType.Wyvern));
-        assertEq(uint(manager.cardTypeOf(119)), uint(ClashCardManager.CardType.Incubus));
+        assertEq(manager.cardTypeOf(0), 0);
+        assertEq(manager.cardTypeOf(768), 3);
+        assertEq(manager.cardTypeOf(2825), 11);
     }
 
     function testLevelOf() public view {
         assertEq(manager.levelOf(0), 1);
         assertEq(manager.levelOf(9), 10);
-        assertEq(manager.levelOf(119), 10);
+        assertEq(manager.levelOf(2825), 10);  // Incubus L10
     }
 
     function testMintAndBurn() public {

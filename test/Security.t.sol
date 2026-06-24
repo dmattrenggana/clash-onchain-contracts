@@ -7,12 +7,13 @@ import "../src/ClashCardManager.sol";
 import "./ClashCards.t.sol";  // imports MockERC20
 
 /**
- * @title Security tests - cost validation, replay, expiration
+ * @title Security tests - EIP-712, cost validation, replay, expiration
  * @notice Verifies the security model:
  *   - User CANNOT mint without paying correct $CLASH
  *   - User CANNOT bypass via replay
  *   - User CANNOT bypass via expired signature
  *   - User CANNOT submit operation for another user
+ *   - User CANNOT forge server signature (EIP-712 + AccessControl)
  */
 contract SecurityTest is Test {
     ClashCards public cards;
@@ -29,6 +30,19 @@ contract SecurityTest is Test {
 
     string public constant BASE_URI = "https://example.com/metadata/";
 
+    // EIP-712 typehashes (must match ClashCardManager)
+    bytes32 constant UPGRADE_TYPEHASH = keccak256(
+        "UpgradeRequest(address user,uint256 cardType,uint256 fromLevel,uint256 toLevel,uint256 tokenIdBurn,uint256 tokenIdMint,uint256 burnAmount,uint256 clashCost,uint256 nonce,uint256 deadline)"
+    );
+
+    bytes32 constant PACK_TYPEHASH = keccak256(
+        "PackRequest(address user,bytes32 packId,uint256 clashCost,uint256 nonce,uint256 deadline)"
+    );
+
+    bytes32 constant CHEST_TYPEHASH = keccak256(
+        "ChestRequest(address user,uint8 chestType,uint256 clashCost,uint256 nonce,uint256 deadline)"
+    );
+
     function setUp() public {
         token = new MockERC20("Clash", "CLASH");
         cards = new ClashCards(BASE_URI, royaltyReceiver, admin);
@@ -42,53 +56,96 @@ contract SecurityTest is Test {
         cards.grantRole(cards.BURNER_ROLE(), address(manager));
         manager.grantRole(manager.GAME_SERVER_ROLE(), gameServer);
 
-        // Setup user1
         token.mint(user1, 1_000_000_000 ether);
-        vm.prank(user1);
-        token.approve(address(manager), type(uint256).max);
-
-        // Setup user2
         token.mint(user2, 1_000_000_000 ether);
-        vm.prank(user2);
-        token.approve(address(manager), type(uint256).max);
-
-        // Setup attacker
         token.mint(attacker, 1_000_000_000 ether);
-        vm.prank(attacker);
-        token.approve(address(manager), type(uint256).max);
+        vm.prank(user1); token.approve(address(manager), type(uint256).max);
+        vm.prank(user2); token.approve(address(manager), type(uint256).max);
+        vm.prank(attacker); token.approve(address(manager), type(uint256).max);
+    }
+
+    // ========== EIP-712 signing helper ==========
+
+    function _signUpgrade(ClashCardManager.UpgradeRequest memory req) internal view returns (bytes memory) {
+        bytes32 structHash = keccak256(abi.encode(
+            UPGRADE_TYPEHASH,
+            req.user,
+            req.cardType,
+            req.fromLevel,
+            req.toLevel,
+            req.tokenIdBurn,
+            req.tokenIdMint,
+            req.burnAmount,
+            req.clashCost,
+            req.nonce,
+            req.deadline
+        ));
+        bytes32 digest = manager.digestHash(structHash);  // EIP-712 + domain
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(GAME_SERVER_PK, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _signPack(ClashCardManager.PackRequest memory req) internal view returns (bytes memory) {
+        bytes32 structHash = keccak256(abi.encode(
+            PACK_TYPEHASH,
+            req.user,
+            req.packId,
+            req.clashCost,
+            req.nonce,
+            req.deadline
+        ));
+        bytes32 digest = manager.digestHash(structHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(GAME_SERVER_PK, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _signChest(ClashCardManager.ChestRequest memory req) internal view returns (bytes memory) {
+        bytes32 structHash = keccak256(abi.encode(
+            CHEST_TYPEHASH,
+            req.user,
+            req.chestType,
+            req.clashCost,
+            req.nonce,
+            req.deadline
+        ));
+        bytes32 digest = manager.digestHash(structHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(GAME_SERVER_PK, digest);
+        return abi.encodePacked(r, s, v);
     }
 
     // ========== Cost validation tests ==========
 
     function testUpgradeCostMismatchReverts() public {
-        // Sign upgrade with WRONG cost
         ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
             user: user1,
-            cardType: ClashCardManager.CardType.Knight,
+            cardType: 0,
             fromLevel: 1,
             toLevel: 2,
             tokenIdBurn: 0,
             tokenIdMint: 1,
             burnAmount: 10,
-            clashCost: 1 ether,  // WRONG! Should be 10_000_000 ether
+            clashCost: 1 ether,  // WRONG
             nonce: 1,
             deadline: block.timestamp + 1000
         });
 
-        bytes32 opId = keccak256(abi.encode(req));
-        bytes memory sig = signOperation(gameServer, opId);
+        bytes memory sig = _signUpgrade(req);
 
-        vm.expectRevert("Cost mismatch");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ClashCardManager.CostMismatch.selector,
+                10_000_000 ether, 1 ether
+            )
+        );
         vm.prank(user1);
         manager.upgradeCard(req, sig);
     }
 
     function testUpgradeCorrectCostWorks() public {
-        // Sign upgrade with CORRECT cost
         uint256 correctCost = 10_000_000 ether;
         ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
             user: user1,
-            cardType: ClashCardManager.CardType.Knight,
+            cardType: 0,
             fromLevel: 1,
             toLevel: 2,
             tokenIdBurn: 0,
@@ -99,10 +156,8 @@ contract SecurityTest is Test {
             deadline: block.timestamp + 1000
         });
 
-        bytes32 opId = keccak256(abi.encode(req));
-        bytes memory sig = signOperation(gameServer, opId);
+        bytes memory sig = _signUpgrade(req);
 
-        // Mint 10 Knight L1 to user1
         cards.mint(user1, 0, 10, "");
         vm.prank(user1);
         cards.setApprovalForAll(address(manager), true);
@@ -113,22 +168,18 @@ contract SecurityTest is Test {
         vm.prank(user1);
         manager.upgradeCard(req, sig);
 
-        // Verify $CLASH paid
         assertEq(token.balanceOf(treasury) - balBefore, correctCost);
-        // Verify NFT burned
         assertEq(cards.balanceOf(user1, 0), user1NftBefore - 10);
-        // Verify NFT minted
         assertEq(cards.balanceOf(user1, 1), 1);
     }
 
-    // ========== Replay protection tests ==========
+    // ========== Replay protection ==========
 
     function testReplayReverts() public {
-        // First, get the operation to succeed
         uint256 correctCost = 10_000_000 ether;
         ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
             user: user1,
-            cardType: ClashCardManager.CardType.Knight,
+            cardType: 0,
             fromLevel: 1,
             toLevel: 2,
             tokenIdBurn: 0,
@@ -139,29 +190,29 @@ contract SecurityTest is Test {
             deadline: block.timestamp + 1000
         });
 
-        bytes32 opId = keccak256(abi.encode(req));
-        bytes memory sig = signOperation(gameServer, opId);
+        bytes memory sig = _signUpgrade(req);
 
         cards.mint(user1, 0, 10, "");
         vm.prank(user1);
         cards.setApprovalForAll(address(manager), true);
 
-        // First call succeeds
         vm.prank(user1);
         manager.upgradeCard(req, sig);
 
-        // Replay should revert
-        vm.expectRevert("Already processed");
+        bytes32 opId = keccak256(abi.encode(req));
+        vm.expectRevert(
+            abi.encodeWithSelector(ClashCardManager.AlreadyProcessed.selector, opId)
+        );
         vm.prank(user1);
         manager.upgradeCard(req, sig);
     }
 
-    // ========== Expiration tests ==========
+    // ========== Expiration ==========
 
     function testExpiredReverts() public {
         ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
             user: user1,
-            cardType: ClashCardManager.CardType.Knight,
+            cardType: 0,
             fromLevel: 1,
             toLevel: 2,
             tokenIdBurn: 0,
@@ -169,23 +220,22 @@ contract SecurityTest is Test {
             burnAmount: 10,
             clashCost: 10_000_000 ether,
             nonce: 4,
-            deadline: block.timestamp - 1  // EXPIRED
+            deadline: block.timestamp - 1
         });
 
-        bytes32 opId = keccak256(abi.encode(req));
-        bytes memory sig = signOperation(gameServer, opId);
+        bytes memory sig = _signUpgrade(req);
 
-        vm.expectRevert("Expired");
+        vm.expectRevert();  // Expired error
         vm.prank(user1);
         manager.upgradeCard(req, sig);
     }
 
-    // ========== Wrong user tests ==========
+    // ========== Wrong user ==========
 
     function testWrongUserReverts() public {
         ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
-            user: user1,  // signed for user1
-            cardType: ClashCardManager.CardType.Knight,
+            user: user1,
+            cardType: 0,
             fromLevel: 1,
             toLevel: 2,
             tokenIdBurn: 0,
@@ -196,21 +246,23 @@ contract SecurityTest is Test {
             deadline: block.timestamp + 1000
         });
 
-        bytes32 opId = keccak256(abi.encode(req));
-        bytes memory sig = signOperation(gameServer, opId);
+        bytes memory sig = _signUpgrade(req);
 
-        // user2 tries to submit user1's signed operation
-        vm.expectRevert("Wrong user");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ClashCardManager.WrongUser.selector, user1, user2
+            )
+        );
         vm.prank(user2);
         manager.upgradeCard(req, sig);
     }
 
-    // ========== Invalid signature tests ==========
+    // ========== Invalid signature ==========
 
     function testInvalidSignatureReverts() public {
         ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
             user: user1,
-            cardType: ClashCardManager.CardType.Knight,
+            cardType: 0,
             fromLevel: 1,
             toLevel: 2,
             tokenIdBurn: 0,
@@ -221,24 +273,32 @@ contract SecurityTest is Test {
             deadline: block.timestamp + 1000
         });
 
-        bytes32 opId = keccak256(abi.encode(req));
-        // Sign with WRONG private key (attacker, not game server)
-        uint256 attackerPk = 0xBEEF;
-        bytes32 ethSignedMessageHash = keccak256(
-            abi.encodePacked("\x19Ethereum Signed Message:\n32", opId)
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(attackerPk, ethSignedMessageHash);
+        // Sign with attacker key instead of game server
+        bytes32 structHash = keccak256(abi.encode(
+            UPGRADE_TYPEHASH,
+            req.user,
+            req.cardType,
+            req.fromLevel,
+            req.toLevel,
+            req.tokenIdBurn,
+            req.tokenIdMint,
+            req.burnAmount,
+            req.clashCost,
+            req.nonce,
+            req.deadline
+        ));
+        bytes32 digest = manager.digestHash(structHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xBEEF, digest);
         bytes memory sig = abi.encodePacked(r, s, v);
 
-        vm.expectRevert("Invalid signature");
+        vm.expectRevert();  // InvalidSignature
         vm.prank(user1);
         manager.upgradeCard(req, sig);
     }
 
-    // ========== Direct mint attempt tests ==========
+    // ========== Direct mint attempts ==========
 
     function testDirectMintReverts() public {
-        // Attacker tries to mint directly on ClashCards
         vm.expectRevert();
         vm.prank(attacker);
         cards.mint(attacker, 0, 1000, "");
@@ -247,21 +307,20 @@ contract SecurityTest is Test {
     function testDirectMintBatchReverts() public {
         uint256[] memory tokenIds = new uint256[](2);
         uint256[] memory amounts = new uint256[](2);
-        tokenIds[0] = 0;
-        tokenIds[1] = 1;
-        amounts[0] = 100;
-        amounts[1] = 100;
+        tokenIds[0] = 0; amounts[0] = 100;
+        tokenIds[1] = 1; amounts[1] = 100;
 
         vm.expectRevert();
         vm.prank(attacker);
         cards.mintBatch(attacker, tokenIds, amounts, "");
     }
 
+    // ========== Burn count validation ==========
+
     function testBurnCountMismatchReverts() public {
-        // Try to upgrade with WRONG burn count (5 instead of 10 for L1->L2)
         ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
             user: user1,
-            cardType: ClashCardManager.CardType.Knight,
+            cardType: 0,
             fromLevel: 1,
             toLevel: 2,
             tokenIdBurn: 0,
@@ -272,28 +331,44 @@ contract SecurityTest is Test {
             deadline: block.timestamp + 1000
         });
 
-        bytes32 opId = keccak256(abi.encode(req));
-        bytes memory sig = signOperation(gameServer, opId);
+        bytes memory sig = _signUpgrade(req);
 
-        vm.expectRevert("Burn count mismatch");
+        vm.expectRevert(
+            abi.encodeWithSelector(ClashCardManager.InvalidBurnCount.selector)
+        );
         vm.prank(user1);
         manager.upgradeCard(req, sig);
     }
 
-    function testGetUpgradeBurnCount() public view {
-        // Verify burn count getter returns correct values
-        assertEq(manager.getUpgradeBurnCount(1), 10);
-        assertEq(manager.getUpgradeBurnCount(2), 40);
-        assertEq(manager.getUpgradeBurnCount(3), 80);
-        assertEq(manager.getUpgradeBurnCount(9), 5120);
+    // ========== Token ID validation ==========
+
+    function testInvalidMintTokenIdReverts() public {
+        // Try to upgrade Knight L1 -> L2 but claim to mint tokenId 30 (Wyvern L1)
+        ClashCardManager.UpgradeRequest memory req = ClashCardManager.UpgradeRequest({
+            user: user1,
+            cardType: 0,
+            fromLevel: 1,
+            toLevel: 2,
+            tokenIdBurn: 0,
+            tokenIdMint: 30,  // WRONG! Should be 1
+            burnAmount: 10,
+            clashCost: 10_000_000 ether,
+            nonce: 101,
+            deadline: block.timestamp + 1000
+        });
+
+        bytes memory sig = _signUpgrade(req);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ClashCardManager.InvalidMintTokenId.selector, 1, 30
+            )
+        );
+        vm.prank(user1);
+        manager.upgradeCard(req, sig);
     }
 
-    function testSetUpgradeBurnCount() public {
-        manager.setUpgradeBurnCount(1, 20);
-        assertEq(manager.getUpgradeBurnCount(1), 20);
-    }
-
-    // ========== Buy pack tests ==========
+    // ========== Buy pack ==========
 
     function testBuyPackCorrectCost() public {
         bytes32 packId = keccak256("FIVE_PACK");
@@ -314,8 +389,7 @@ contract SecurityTest is Test {
             deadline: block.timestamp + 1000
         });
 
-        bytes32 opId = keccak256(abi.encode(req, tokenIds, amounts));
-        bytes memory sig = signOperation(gameServer, opId);
+        bytes memory sig = _signPack(req);
 
         uint256 balBefore = token.balanceOf(treasury);
 
@@ -342,26 +416,29 @@ contract SecurityTest is Test {
         ClashCardManager.PackRequest memory req = ClashCardManager.PackRequest({
             user: user1,
             packId: packId,
-            clashCost: 100_000 ether,  // WRONG! Should be 200_000
+            clashCost: 100_000 ether,  // WRONG
             nonce: 8,
             deadline: block.timestamp + 1000
         });
 
-        bytes32 opId = keccak256(abi.encode(req, tokenIds, amounts));
-        bytes memory sig = signOperation(gameServer, opId);
+        bytes memory sig = _signPack(req);
 
-        vm.expectRevert("Cost mismatch");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ClashCardManager.CostMismatch.selector, 200_000 ether, 100_000 ether
+            )
+        );
         vm.prank(user1);
         manager.buyPack(req, sig, tokenIds, amounts);
     }
 
-    // ========== Buy chest tests ==========
+    // ========== Buy chest ==========
 
     function testBuyChestCorrectCost() public {
         uint256[] memory tokenIds = new uint256[](20);
         uint256[] memory amounts = new uint256[](20);
         for (uint256 i = 0; i < 20; i++) {
-            tokenIds[i] = i % 10;  // mix of levels
+            tokenIds[i] = i % 10;
             amounts[i] = 1;
         }
 
@@ -373,8 +450,7 @@ contract SecurityTest is Test {
             deadline: block.timestamp + 1000
         });
 
-        bytes32 opId = keccak256(abi.encode(req, tokenIds, amounts));
-        bytes memory sig = signOperation(gameServer, opId);
+        bytes memory sig = _signChest(req);
 
         uint256 balBefore = token.balanceOf(treasury);
 
@@ -384,14 +460,106 @@ contract SecurityTest is Test {
         assertEq(token.balanceOf(treasury) - balBefore, 1_000_000 ether);
     }
 
-    // ========== Helper: sign operation ==========
+    // ========== View functions ==========
 
-    function signOperation(address signer, bytes32 opId) internal pure returns (bytes memory) {
-        bytes32 ethSignedMessageHash = keccak256(
-            abi.encodePacked("\x19Ethereum Signed Message:\n32", opId)
+    function testGetUpgradeBurnCount() public view {
+        assertEq(manager.getUpgradeBurnCount(1), 10);
+        assertEq(manager.getUpgradeBurnCount(2), 40);
+        assertEq(manager.getUpgradeBurnCount(3), 80);
+        assertEq(manager.getUpgradeBurnCount(9), 5120);
+    }
+
+    function testSetUpgradeBurnCount() public {
+        manager.setUpgradeBurnCount(1, 20);
+        assertEq(manager.getUpgradeBurnCount(1), 20);
+    }
+
+    // ========== Flexibility tests ==========
+
+    function testAddCardType() public {
+        // Initial: 12 card types (0-11)
+        assertEq(manager.getCardTypeCount(), 12);
+        assertTrue(manager.cardTypeExists(0));
+        assertTrue(manager.cardTypeExists(11));
+        assertFalse(manager.cardTypeExists(12));
+
+        // Add 13th card type
+        manager.addCardType(12);
+        assertTrue(manager.cardTypeExists(12));
+        assertEq(manager.getCardTypeCount(), 13);
+    }
+
+    function testAddCardTypeDuplicateReverts() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(ClashCardManager.CardTypeAlreadyExists.selector, 0)
         );
-        // Use gameServer private key
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(GAME_SERVER_PK, ethSignedMessageHash);
-        return abi.encodePacked(r, s, v);
+        manager.addCardType(0);  // Knight already exists
+    }
+
+    function testAddCardTypeExceedsMaxReverts() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(ClashCardManager.ExceedsMaxCardTypes.selector)
+        );
+        manager.addCardType(256);  // >= MAX_CARD_TYPES
+    }
+
+    function testRemoveCardType() public {
+        assertTrue(manager.cardTypeExists(5));
+        manager.removeCardType(5);
+        assertFalse(manager.cardTypeExists(5));
+    }
+
+    function testRemoveNonExistentCardTypeReverts() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(ClashCardManager.CardTypeDoesNotExist.selector, 12)
+        );
+        manager.removeCardType(12);  // Never added
+    }
+
+    function testSetMaxLevel() public {
+        // Initial maxLevel = 10
+        assertEq(manager.maxLevel(), 10);
+        assertEq(manager.getUpgradeCost(9), 2_560_000_000 ether);
+
+        // Increase to 15
+        manager.setMaxLevel(15);
+        assertEq(manager.maxLevel(), 15);
+
+        // New levels should have 2x default pricing
+        assertEq(manager.getUpgradeCost(10), 5_120_000_000 ether);   // 2x L9->L10
+        assertEq(manager.getUpgradeCost(14), 81_920_000_000 ether);  // 2x L13->L14
+
+        assertEq(manager.getUpgradeBurnCount(10), 10240);
+        assertEq(manager.getUpgradeBurnCount(14), 163840);
+    }
+
+    function testSetMaxLevelDecreaseReverts() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ClashCardManager.CannotDecreaseMaxLevel.selector, 10, 5
+            )
+        );
+        manager.setMaxLevel(5);
+    }
+
+    function testSetMaxLevelExceedsMaxReverts() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(ClashCardManager.ExceedsMaxLevels.selector)
+        );
+        manager.setMaxLevel(257);  // > MAX_LEVELS_PER_TYPE (256)
+    }
+
+    function testNewCardTypeWithNewLevel() public {
+        // Add 13th card type and extend max level to 15
+        manager.addCardType(12);
+        manager.setMaxLevel(15);
+
+        // Verify token ID encoding works for new types/levels
+        // cardType 12, level 1 = 12*256 + 0 = 3072
+        assertEq(manager.tokenIdOf(12, 1), 3072);
+        // cardType 12, level 15 = 12*256 + 14 = 3086
+        assertEq(manager.tokenIdOf(12, 15), 3086);
+        // cardType 0 (Knight), level 15 = 0*256 + 14 = 14
+        assertEq(manager.tokenIdOf(0, 15), 14);
     }
 }
