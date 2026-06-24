@@ -503,6 +503,13 @@ contract ClashCardManager {
         require(expectedCost > 0, "Unknown pack");
         require(request.clashCost == expectedCost, "Cost mismatch");
 
+        // PACK L1-ONLY ENFORCEMENT (2026-06-24):
+        // Packs must ONLY mint Level 1 cards. Higher levels require
+        // upgradeCard() with proper burn + cost.
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            require(tokenIds[i] % MAX_LEVELS_PER_TYPE == 0, "Pack: L1 only");
+        }
+
         bytes32 opId = keccak256(abi.encode(request, keccak256(abi.encodePacked(tokenIds)), keccak256(abi.encodePacked(amounts))));
         require(!usedOperations[opId], "Already processed");
         usedOperations[opId] = true;
@@ -541,6 +548,16 @@ contract ClashCardManager {
         uint256 expectedCost = chestCosts[request.chestType];
         require(expectedCost > 0, "Unknown chest");
         require(request.clashCost == expectedCost, "Cost mismatch");
+
+        // CHEST L1-ONLY ENFORCEMENT (2026-06-24):
+        // Chests must ONLY mint Level 1 cards. Higher levels (L2+) can
+        // ONLY be obtained via upgradeCard(). This prevents users from
+        // exploiting the fact that tokenIds[] is not part of the EIP-712
+        // signature — a malicious user could otherwise replay a valid
+        // chest signature with swapped tokenIds to mint L2+ cards.
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            require(tokenIds[i] % MAX_LEVELS_PER_TYPE == 0, "Chest: L1 only");
+        }
 
         bytes32 opId = keccak256(abi.encode(request, keccak256(abi.encodePacked(tokenIds)), keccak256(abi.encodePacked(amounts))));
         require(!usedOperations[opId], "Already processed");

@@ -196,6 +196,7 @@ contract ClashCardManager is AccessControl, ReentrancyGuard, EIP712 {
     error InvalidAddress();
     error InvalidLevel();
     error InvalidCost();
+    error ChestL1Only(uint256 tokenId);
     error InvalidBurnCount();
     error InvalidCardType(uint256 cardTypeId);
     error CardTypeAlreadyExists(uint256 cardTypeId);
@@ -408,6 +409,17 @@ contract ClashCardManager is AccessControl, ReentrancyGuard, EIP712 {
         if (expectedCost == 0) revert UnknownChest(request.chestType);
         if (request.clashCost != expectedCost) {
             revert CostMismatch(expectedCost, request.clashCost);
+        }
+
+        // CHEST L1-ONLY ENFORCEMENT (2026-06-24):
+        // Chests must ONLY mint Level 1 cards. tokenIds[] is not part of
+        // the EIP-712 signature, so without this check a malicious user
+        // could replay a valid chest signature with tokenIds pointing
+        // to L2+ cards. Higher levels must come from upgradeCard().
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            if (tokenIds[i] % MAX_LEVELS_PER_TYPE != 0) {
+                revert ChestL1Only(tokenIds[i]);
+            }
         }
 
         bytes32 opId = keccak256(abi.encode(
