@@ -1,16 +1,6 @@
 # Remix Deployment Guide v2 (Clean Self-Contained)
 
-Deploy Clash Onchain NFT + $CLASH contracts via Remix. **No npm install, no Foundry, no external dependencies.**
-
-## ⚠️ CRITICAL: Enable via-ir (IR-based optimizer)
-
-This contract uses EIP-712 with many fields. You MUST enable via-ir in Remix compiler to avoid "Stack too deep" error.
-
-**Steps**:
-1. Open Solidity Compiler tab
-2. Click **"Advanced Settings"** or **"Show advanced settings"**
-3. ☑️ Check **"via-ir"** (or "Use IR-based optimizer")
-4. Click **"Compile"**
+Deploy Clash Onchain NFT + $CLASH contracts via Remix. **No npm install, no Foundry, no external dependencies, no special compiler flags.**
 
 ## Step 1: Setup Remix
 
@@ -22,7 +12,7 @@ This contract uses EIP-712 with many fields. You MUST enable via-ir in Remix com
 
 1. **Solidity Compiler** tab
 2. Version: **0.8.20**
-3. ☑️ Enable **via-ir** (Advanced Settings)
+3. Default settings (optimizer enabled is fine)
 4. Klik **"Compile Clash.sol"**
 
 Should see green checkmark, no errors.
@@ -143,8 +133,13 @@ CLASH_CARD_MANAGER_ADDRESS=0x...
 ## Troubleshooting
 
 ### "Stack too deep" error
-- Enable **via-ir** in Advanced Settings (CRITICAL)
+- This is fixed in v2 — contract refactored to avoid stack-too-deep
+- Make sure you're using the latest `ClashOnchain_Remix.sol`
 - Use Solidity **0.8.20** (not newer)
+
+### Cannot find via-ir setting
+- v2 doesn't need via-ir — just use default settings
+- Contract is refactored to compile without it
 
 ### "Compiler error"
 - Make sure you selected via-ir

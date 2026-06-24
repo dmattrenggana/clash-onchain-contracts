@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // =====================================================================
 //   Clash Onchain NFT + $CLASH Manager (Clean, Self-Contained)
-//   Compatible with Remix IDE (no external imports).
+//   Compatible with Remix IDE (no external imports, no via-ir needed).
 //
-//   IMPORTANT — COMPILER SETTINGS IN REMIX:
+//   COMPILER SETTINGS IN REMIX:
 //     - Solidity version: 0.8.20
-//     - ENABLE "via-ir" in Advanced Settings (or "Use IR-based optimizer")
-//       (Required to avoid "Stack too deep" error in upgradeCard)
+//     - Optimizer: enabled (200 runs recommended)
+//     - No special flags needed
 //
 //   Contains:
 //     - ClashCards (ERC-1155 NFT, 5% royalty, role-based mint/burn)
@@ -18,7 +18,7 @@
 //
 //   DEPLOYMENT IN REMIX:
 //     1. Paste this file in Remix (File Explorer → New File → Clash.sol)
-//     2. Compiler: 0.8.20, ENABLE "via-ir" in Advanced Settings
+//     2. Compiler: 0.8.20 (default optimizer is fine)
 //     3. Click "Compile Clash.sol"
 //     4. Deploy ClashCards first (constructor: baseURI, royaltyReceiver, admin)
 //     5. Copy ClashCards address
@@ -444,18 +444,7 @@ contract ClashCardManager {
         require(request.toLevel <= maxLevel, "Exceeds max level");
         require(request.clashCost > 0, "Invalid cost");
         require(cardTypeExists[request.cardType], "Unknown card type");
-
-        // Anti-forgery: token ID must match
-        uint256 expectedMintId = tokenIdOf(request.cardType, request.toLevel);
-        require(request.tokenIdMint == expectedMintId, "Invalid mint tokenId");
-
-        // Anti-forgery: cost must match on-chain
-        uint256 expectedCost = upgradeCosts[request.fromLevel - 1];
-        require(request.clashCost == expectedCost, "Cost mismatch");
-
-        // Anti-forgery: burn count must match on-chain
-        uint256 expectedBurn = upgradeBurnCounts[request.fromLevel - 1];
-        require(request.burnAmount == expectedBurn, "Burn count mismatch");
+        _validateUpgradePricing(request);
 
         // Replay protection
         bytes32 opId = keccak256(abi.encode(request));
@@ -463,7 +452,30 @@ contract ClashCardManager {
         usedOperations[opId] = true;
 
         // Signature verification
-        _verifySignature(_hashTypedData(keccak256(abi.encode(
+        _verifyUpgradeRequest(request, signature);
+
+        // ---- Execute (atomic) ----
+        cards.safeTransferFrom(request.user, address(this), request.tokenIdBurn, request.burnAmount, "");
+        require(clashToken.transferFrom(request.user, treasury, request.clashCost), "Payment failed");
+        cards.mint(request.user, request.tokenIdMint, 1, "");
+
+        emit CardUpgraded(
+            request.user, request.cardType, request.fromLevel, request.toLevel,
+            request.tokenIdBurn, request.tokenIdMint, request.burnAmount, request.clashCost, opId
+        );
+    }
+
+    function _validateUpgradePricing(UpgradeRequest calldata request) internal view {
+        uint256 expectedMintId = tokenIdOf(request.cardType, request.toLevel);
+        require(request.tokenIdMint == expectedMintId, "Invalid mint tokenId");
+        uint256 expectedCost = upgradeCosts[request.fromLevel - 1];
+        require(request.clashCost == expectedCost, "Cost mismatch");
+        uint256 expectedBurn = upgradeBurnCounts[request.fromLevel - 1];
+        require(request.burnAmount == expectedBurn, "Burn count mismatch");
+    }
+
+    function _verifyUpgradeRequest(UpgradeRequest calldata request, bytes calldata signature) internal view {
+        bytes32 structHash = keccak256(abi.encode(
             UPGRADE_TYPEHASH,
             request.user,
             request.cardType,
@@ -475,17 +487,8 @@ contract ClashCardManager {
             request.clashCost,
             request.nonce,
             request.deadline
-        ))), signature);
-
-        // ---- Execute (atomic) ----
-        cards.safeTransferFrom(request.user, address(this), request.tokenIdBurn, request.burnAmount, "");
-        require(clashToken.transferFrom(request.user, treasury, request.clashCost), "Payment failed");
-        cards.mint(request.user, request.tokenIdMint, 1, "");
-
-        emit CardUpgraded(
-            request.user, request.cardType, request.fromLevel, request.toLevel,
-            request.tokenIdBurn, request.tokenIdMint, request.burnAmount, request.clashCost, opId
-        );
+        ));
+        _verifySignature(_hashTypedData(structHash), signature);
     }
 
     function buyPack(PackRequest calldata request, bytes calldata signature, uint256[] calldata tokenIds, uint256[] calldata amounts) external nonReentrant {
@@ -504,9 +507,7 @@ contract ClashCardManager {
         require(!usedOperations[opId], "Already processed");
         usedOperations[opId] = true;
 
-        _verifySignature(_hashTypedData(keccak256(abi.encode(
-            PACK_TYPEHASH, request.user, request.packId, request.clashCost, request.nonce, request.deadline
-        ))), signature);
+        _verifyPackRequest(request, signature);
 
         require(clashToken.transferFrom(request.user, treasury, request.clashCost), "Payment failed");
         cards.mintBatch(request.user, tokenIds, amounts, "");
@@ -515,6 +516,18 @@ contract ClashCardManager {
         for (uint256 i = 0; i < amounts.length; i++) total += amounts[i];
 
         emit PackPurchased(request.user, request.packId, request.clashCost, total, opId);
+    }
+
+    function _verifyPackRequest(PackRequest calldata request, bytes calldata signature) internal view {
+        bytes32 structHash = keccak256(abi.encode(
+            PACK_TYPEHASH,
+            request.user,
+            request.packId,
+            request.clashCost,
+            request.nonce,
+            request.deadline
+        ));
+        _verifySignature(_hashTypedData(structHash), signature);
     }
 
     function buyChest(ChestRequest calldata request, bytes calldata signature, uint256[] calldata tokenIds, uint256[] calldata amounts) external nonReentrant {
@@ -533,9 +546,7 @@ contract ClashCardManager {
         require(!usedOperations[opId], "Already processed");
         usedOperations[opId] = true;
 
-        _verifySignature(_hashTypedData(keccak256(abi.encode(
-            CHEST_TYPEHASH, request.user, request.chestType, request.clashCost, request.nonce, request.deadline
-        ))), signature);
+        _verifyChestRequest(request, signature);
 
         require(clashToken.transferFrom(request.user, treasury, request.clashCost), "Payment failed");
         cards.mintBatch(request.user, tokenIds, amounts, "");
@@ -544,6 +555,18 @@ contract ClashCardManager {
         for (uint256 i = 0; i < amounts.length; i++) total += amounts[i];
 
         emit ChestPurchased(request.user, request.chestType, request.clashCost, total, opId);
+    }
+
+    function _verifyChestRequest(ChestRequest calldata request, bytes calldata signature) internal view {
+        bytes32 structHash = keccak256(abi.encode(
+            CHEST_TYPEHASH,
+            request.user,
+            request.chestType,
+            request.clashCost,
+            request.nonce,
+            request.deadline
+        ));
+        _verifySignature(_hashTypedData(structHash), signature);
     }
 
     // ============================================================
