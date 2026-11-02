@@ -1,0 +1,4 @@
+tools/rh-deploy/node_modules/
+tools/rh-deploy/artifacts.json
+tools/rh-deploy/ClashOnchain_Remix_parity.sol
+tools/rh-deploy/ClashOnchain_Remix_7b0591b.sol
