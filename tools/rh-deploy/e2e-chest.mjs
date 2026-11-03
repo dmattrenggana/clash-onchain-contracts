@@ -16,8 +16,8 @@ import { robinhood } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 
 const CHEST_TYPE = Number(process.argv[2] ?? 0); // 0 silver, 1 gold, 2 magical
-const TOKEN = "0xbD719784F6BF693E20bA520dF81FDa6B202249Aa";
-const MANAGER = "0x83547652ba08aa70ba7c96b8369bd2bcfe4fefd2";
+const TOKEN = "0xe577182a9a29af25675b3563f3b96aa948b5df19";
+const MANAGER = "0x17d7509ab855d7fda63d1391cc3d81c891f68f32";
 const CARDS = "0x92f1185a7668c3730a2b3222db3047ae6135beca";
 
 const CHEST_CONFIG = {

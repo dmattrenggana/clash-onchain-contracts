@@ -18,8 +18,8 @@ const CARD_TYPE = BigInt(process.argv[2] ?? 0);
 const FROM_LEVEL = BigInt(process.argv[3] ?? 1);
 const TO_LEVEL = FROM_LEVEL + 1n;
 
-const TOKEN = "0xbD719784F6BF693E20bA520dF81FDa6B202249Aa";
-const MANAGER = "0x83547652ba08aa70ba7c96b8369bd2bcfe4fefd2";
+const TOKEN = "0xe577182a9a29af25675b3563f3b96aa948b5df19";
+const MANAGER = "0x17d7509ab855d7fda63d1391cc3d81c891f68f32";
 const CARDS = "0x92f1185a7668c3730a2b3222db3047ae6135beca";
 const TREASURY = "0x3e419a7949AF95194471Ea293d9a3BE821d3a991";
 

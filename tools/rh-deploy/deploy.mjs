@@ -5,7 +5,7 @@
 //   2. ClashCardManager               constructor(token, cards, treasury, admin)
 //   3. ClashRewardClaim               constructor(token, signerAddress)
 //   4. Wiring   grantRole(MINTER/BURNER on cards -> manager), setGameServer, addCardType(12)
-//   5. Pricing  RH = 1/100 of Base (chest 10k/30k/50k, upgrade 100k -> 25.6M)
+//   5. Pricing  RH = Base (same token, same supply): chest 1M/3M/5M, upgrade 10M -> 2.56B
 //   6. Verify   read every value back
 //
 // Usage:
@@ -53,11 +53,11 @@ const REWARD_SIGNER = env("RH_REWARD_SIGNER");
 const BASE_URI =
   "https://ktrwdkrxsttdadqvudco.supabase.co/storage/v1/object/public/nft-assets/metadata/";
 
-// --- pricing (Robinhood = 1/100 of Base) -------------------------------------
-const CHEST_COSTS = [10_000n, 30_000n, 50_000n]; // Silver / Gold / Magical
+// --- pricing (Robinhood = Base: the $CLASH token is bridged from Base) ------
+const CHEST_COSTS = [1_000_000n, 3_000_000n, 5_000_000n]; // Silver / Gold / Magical
 const UPGRADE_COSTS = [
-  100_000n, 200_000n, 400_000n, 800_000n, 1_600_000n,
-  3_200_000n, 6_400_000n, 12_800_000n, 25_600_000n,
+  10_000_000n, 20_000_000n, 40_000_000n, 80_000_000n, 160_000_000n,
+  320_000_000n, 640_000_000n, 1_280_000_000n, 2_560_000_000n,
 ]; // cost to go L1->L2 ... L9->L10
 const toWei = (n) => n * 10n ** 18n;
 
@@ -78,7 +78,7 @@ async function estimateGasWithRetry(data, label) {
     try {
       const gas = await publicClient.estimateGas({ data, account: account.address });
       // 25% headroom, and never below the observed usage
-      return BigInt(gas) + BigInt(gas) / 4n;
+      return BigInt(gas) + BigInt(gas) / 8n;
     } catch (e) {
       lastErr = e;
       const msg = String(e.shortMessage || e.message).split("\n")[0].slice(0, 120);
@@ -97,8 +97,12 @@ async function deployContract(artifact, args, label) {
     return "0xd0000000000000000000000000000000000000d0";
   }
   const gas = await estimateGasWithRetry(data, label);
-  console.log(`   gas limit ${gas}`);
-  const hash = await walletClient.sendTransaction({ chain: robinhood, data, gas });
+  // Pin the fee to the current base fee (+50%): the node checks
+  // balance >= gas * maxFeePerGas, so a tight cap keeps the deploy affordable.
+  const base = (await publicClient.getBlock({ blockTag: "latest" })).baseFeePerGas ?? 0n;
+  const gasPrice = (base * 3n) / 2n;
+  console.log(`   gas limit ${gas} @ ${gasPrice} wei`);
+  const hash = await walletClient.sendTransaction({ chain: robinhood, data, gas, gasPrice });
   console.log(`   tx ${hash}`);
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") throw new Error(`${label} failed`);
